@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+IFS=$'\n\t'
+canon_content_hints='etap'
+not_a_story='anim|konkurs|gra|komiks'
+
+function list_season_ids {
+	curl https://positivia.pl 2>/dev/null | grep \/category\/ | sed 's_^.*/category/__;s_/.*$__' | grep -E "${canon_content_hints}"
+}
+
+function list_season_names {
+	curl https://positivia.pl 2>/dev/null | grep \/category\/ | grep -E "${canon_content_hints}" | sed 's_^.*hfe-sub-menu-item">__;s_<.*$__'
+}
+
+function list_pages_of_season {
+	local season=${1}
+	local result=1
+	local next_page_found=1
+	while [ ${next_page_found} -eq 1 ]; do
+		next_page_found=$(curl -L https://positivia.pl/category/${season}/page/${result}/ 2>/dev/null | grep Następna\ strona -c)
+		if [ ${next_page_found} -ne 0 ]; then
+			result=$((${result} + 1))
+		fi
+	done
+	echo ${result}
+}
+
+function list_episode_names {
+	local season=${1}
+	local season_pages=$(list_pages_of_season ${season})
+	for((counter=${season_pages}; counter != 0; counter--)); do
+		curl -L https://positivia.pl/category/${season}/page/${counter}/ 2>/dev/null | grep '<h2 class="entry-title" itemprop="headline">' | grep -vE "${not_a_story}" | sed 's/^.*rel="bookmark">//;s/<.*$//;s/&.*;//' | tac -
+	done
+}
+
+function list_episode_ids {
+	local season=${1}
+	local season_pages=$(list_pages_of_season ${season})
+	for((counter=${season_pages}; counter != 0; counter--)); do
+		curl -L https://positivia.pl/category/${season}/page/${counter}/ 2>/dev/null | grep '<h2 class="entry-title" itemprop="headline">' | grep -vE "${not_a_story}" | sed 's_/" rel="bookmark">.*$__;s_^.*/__' | tac -
+	done
+}
+
+function main {
+	local seasons_by_id=($(list_season_ids))
+	local seasons_by_name=($(list_season_names))
+	local episodes_by_id=""
+	local episodes_by_name=""
+	for((season_counter=0; season_counter < ${#seasons_by_id[@]}; season_counter++)); do
+		episodes_by_id=($(list_episode_ids ${seasons_by_id[${season_counter}]}))
+		episodes_by_name=($(list_episode_names ${seasons_by_id[${season_counter}]}))
+		mkdir ${seasons_by_name[${season_counter}]}
+		for((episode_counter=0; episode_counter < ${#episodes_by_id[@]}; episode_counter++)); do
+			echo "Season: ${seasons_by_name[${season_counter}]}"
+			echo "Episode: ${episodes_by_name[${episode_counter}]}"
+			curl -L https://positivia.pl/${episodes_by_id[${episode_counter}]}/ 2>/dev/null | grep -Pzo '.*<div class="entry-content clear"(.*\n)*' | grep -Pzo '(.*\n)*.*</div><!-- .entry-content .clear -->' | sed -e 's/<[^>]*>//g;s/&.*;//g' | sed 's/^.*<div class="entry-content clear".*$//' | sed 's_^.*itemprop="text".*$__g' | tr -d '\0' | tr -d '\t' | tr -d '\r' | sed 's/^[0-9]*$//' | sed 's/^\ //' | sed ':a;N;$!ba;s/\n\n\n*/\n\n/g' | espeak -v polish --stdout | ffmpeg -i - "${seasons_by_name[${season_counter}]}/$((${episode_counter} + 1)) - ${episodes_by_name[${episode_counter}]}.flac"
+			if [ ! -f "${seasons_by_name[${season_counter}]}/$((${episode_counter} + 1)) - ${episodes_by_name[${episode_counter}]}.flac" ]; then
+				echo "Error"
+				exit
+			fi
+			echo "Done"
+		done
+	done
+}
+
+main $@
